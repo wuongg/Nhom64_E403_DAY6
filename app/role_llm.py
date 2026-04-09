@@ -38,8 +38,8 @@ def decide_role_with_llm(user_text: str, model: str = "gpt-4o-mini") -> RoleDeci
             reason=f"fallback(rule): {d.reason}",
         )
 
-    raw = chat_openai(_ROLE_CLASSIFIER_SYSTEM, user_text, model=model)
     try:
+        raw = chat_openai(_ROLE_CLASSIFIER_SYSTEM, user_text, model=model)
         obj = json.loads(raw)
         role = obj.get("role")
         safety = bool(obj.get("safety", False))
@@ -65,5 +65,5 @@ def decide_role_with_llm(user_text: str, model: str = "gpt-4o-mini") -> RoleDeci
             role=d.role,
             safety=d.safety,
             driver_type=d.driver_type,
-            reason=f"fallback(rule after llm_parse_error): {d.reason} | llm_raw={raw!r}",
+            reason=f"fallback(rule after llm_error): {d.reason}",
         )

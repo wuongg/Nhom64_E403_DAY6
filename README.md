@@ -1,5 +1,29 @@
 # Nhom064-403 — XanhSM Help Center AI (prototype)
 
+## FastAPI backend
+
+This repo now has a backend contract for a FastAPI-style app on top of the existing CLI pipeline. The examples below assume the app is exposed as `app.api.main:create_app`; if the final entrypoint lands elsewhere, keep the same env contract and adjust the import path.
+
+Set the runtime environment:
+
+```powershell
+$env:RAW_DIR="$PWD/raw"
+$env:DB_URL="sqlite:///./backend.db"
+$env:OPENAI_API_KEY="YOUR_KEY"
+```
+
+Run the API:
+
+```powershell
+uvicorn app.api.main:create_app --factory --reload
+```
+
+Run tests:
+
+```powershell
+pytest -q
+```
+
 Prototype tối thiểu cho luồng:
 
 - **LLM role classifier (tool-like)** để chọn **role** (user / driver / merchant) + nhánh **safety**

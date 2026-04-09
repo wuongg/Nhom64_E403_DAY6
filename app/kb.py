@@ -25,6 +25,28 @@ class KBEntry:
         return str(self.metadata.get("question", ""))
 
 
+@dataclass(frozen=True, slots=True)
+class ScoredKBEntry:
+    entry: KBEntry
+    score: int
+
+    @property
+    def id(self) -> str:
+        return self.entry.id
+
+    @property
+    def category(self) -> str:
+        return self.entry.category
+
+    @property
+    def topic(self) -> str:
+        return self.entry.topic
+
+    @property
+    def question(self) -> str:
+        return self.entry.question
+
+
 def load_from_raw_folder(raw_dir: str | Path) -> list[KBEntry]:
     """
     Load KB from markdown files under raw/ and map into KBEntry.
@@ -58,7 +80,11 @@ def _score(query_tokens: set[str], entry: KBEntry) -> int:
     return score
 
 
-def retrieve(entries: list[KBEntry], query: str, role: str, k: int = 5) -> list[KBEntry]:
+def score_entry(query: str, entry: KBEntry) -> int:
+    return _score(set(tokenize(query)), entry)
+
+
+def retrieve_scored(entries: list[KBEntry], query: str, role: str, k: int = 5) -> list[ScoredKBEntry]:
     categories = _role_to_categories(role)
     filtered = [e for e in entries if e.category in categories]
 
@@ -66,10 +92,14 @@ def retrieve(entries: list[KBEntry], query: str, role: str, k: int = 5) -> list[
     scored = [(e, _score(qt, e)) for e in filtered]
     scored.sort(key=lambda x: x[1], reverse=True)
 
-    top = [e for (e, s) in scored if s > 0][:k]
+    top = [ScoredKBEntry(entry=e, score=s) for (e, s) in scored if s > 0][:k]
     if top:
         return top
 
     # If no overlaps, still return a small fallback slice from the role bucket.
-    return filtered[: min(k, len(filtered))]
+    return [ScoredKBEntry(entry=e, score=s) for (e, s) in scored[: min(k, len(scored))]]
+
+
+def retrieve(entries: list[KBEntry], query: str, role: str, k: int = 5) -> list[KBEntry]:
+    return [item.entry for item in retrieve_scored(entries, query, role, k=k)]
 
