@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, AsyncIterator
 
 from dotenv import load_dotenv
 
@@ -128,4 +128,56 @@ def chat_openai_with_metrics(system: str, user: str, model: str = "gpt-4o-mini")
 
 def chat_openai(system: str, user: str, model: str = "gpt-4o-mini") -> str:
     return chat_openai_with_metrics(system, user, model=model).text
+
+
+async def chat_openai_stream_async(
+    system: str,
+    user: str,
+    model: str = "gpt-4o-mini",
+) -> AsyncIterator[str | ChatResult]:
+    """
+    Async generator for streaming OpenAI responses.
+    Yields str chunks while tokens arrive, then yields a final ChatResult
+    with full metrics (latency, usage, cost).
+
+    Requires OPENAI_API_KEY env var and openai>=1.26 for stream_options usage.
+    """
+    from openai import AsyncOpenAI  # type: ignore
+
+    load_dotenv(override=False)
+    client = AsyncOpenAI()
+    t0 = time.perf_counter()
+
+    stream = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=0.2,
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+
+    collected: list[str] = []
+    usage_obj = None
+
+    async for chunk in stream:
+        if chunk.choices and chunk.choices[0].delta.content:
+            text = chunk.choices[0].delta.content
+            collected.append(text)
+            yield text
+        # usage arrives on the final empty chunk when include_usage=True
+        if getattr(chunk, "usage", None) is not None:
+            usage_obj = chunk.usage
+
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+    usage = _normalize_usage(usage_obj)
+    yield ChatResult(
+        text="".join(collected),
+        model=model,
+        latency_ms=latency_ms,
+        usage=usage,
+        cost_usd_estimate=_estimate_cost_usd(model, usage),
+    )
 

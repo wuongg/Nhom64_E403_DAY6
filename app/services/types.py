@@ -8,6 +8,15 @@ from ..llm import ChatResult
 from ..prompting import PromptBundle
 from ..role_tree import RoleDecision
 
+# Re-export for convenience
+__all__ = [
+    "KnowledgeBaseHit",
+    "KnowledgeBaseSearchResult",
+    "HandoffDecision",
+    "ChatPrepared",
+    "ChatTurnResult",
+]
+
 
 @dataclass(frozen=True, slots=True)
 class KnowledgeBaseHit:
@@ -68,6 +77,24 @@ class HandoffDecision:
     recommended: bool
     reason: str
     trigger: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChatPrepared:
+    """Holds all pre-LLM state: role decision, KB results, handoff, and prompt.
+    Produced by ChatService.prepare(); consumed by the streaming route."""
+
+    query: str
+    role_decision: RoleDecision
+    kb_results: tuple[KnowledgeBaseSearchResult, ...]
+    kb_hits: tuple[KnowledgeBaseHit, ...]
+    handoff: HandoffDecision
+    prompt: PromptBundle
+    active_model: str
+    mode: str           # "answer" | "preview"
+    preview_only: bool
+    note: str | None
+    debug: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)

@@ -395,6 +395,19 @@
     color: #fff;
   }
 
+  /* Blinking cursor during streaming */
+  .streaming-body::after {
+    content: '▋';
+    display: inline-block;
+    color: #006a64;
+    animation: blink 0.9s step-end infinite;
+    margin-left: 1px;
+    font-size: 0.85em;
+    vertical-align: baseline;
+  }
+  /* Remove cursor once streaming finishes (class replaced) */
+  .prose::after { display: none; }
+
   .metric-chip {
     display: inline-flex;
     align-items: center;
@@ -452,6 +465,28 @@ async function postMessage(text) {
     method: 'POST',
     body: JSON.stringify({ message: text, role_mode: 'rule' }),
   });
+}
+
+/** Async generator: parses raw SSE stream from a fetch Response. */
+async function* parseSSE(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const json = line.slice(6).trim();
+        if (json) {
+          try { yield JSON.parse(json); } catch { /* skip malformed */ }
+        }
+      }
+    }
+  }
 }
 
 async function postFeedback(messageId, verdict, reason, note) {
@@ -557,6 +592,11 @@ function renderBotMessage(turn, time) {
           ${kbHits.length} nguồn tham chiếu
         </summary>
         <ul class="mt-2 space-y-2 pl-2 border-l-2 border-primary/20">${items}</ul>
+        <a href="https://www.xanhsm.com/helps" target="_blank" rel="noopener noreferrer"
+           class="mt-3 flex items-center gap-1.5 text-[10px] font-bold text-primary hover:underline w-fit">
+          <span class="material-symbols-outlined" style="font-size:0.85rem;">open_in_new</span>
+          Xem toàn bộ tại xanhsm.com/helps
+        </a>
       </details>`;
   }
 
@@ -697,6 +737,153 @@ function renderTypingIndicator() {
   return div;
 }
 
+/* ─────────────────────────────────────────────────
+   STREAMING BUBBLE
+───────────────────────────────────────────────── */
+
+/**
+ * Creates a bot bubble ready to receive streaming text.
+ * Returns references to live-update targets.
+ */
+function createStreamingBubble(time) {
+  const uid = `sb-${Date.now()}`;
+  const div = document.createElement('div');
+  div.className = 'flex flex-col items-start anim-right';
+  div.dataset.streamUid = uid;
+  div.innerHTML = `
+    <div class="flex items-start gap-3 max-w-[95%] md:max-w-[78%]">
+      <div class="w-10 h-10 rounded-full bg-secondary-container flex items-center justify-center shrink-0 shadow-sm mt-1">
+        <span class="material-symbols-outlined text-primary icon-filled" style="font-size:1.3rem;">smart_toy</span>
+      </div>
+      <div class="space-y-2 min-w-0 w-full">
+        <div class="bg-surface-container-lowest p-5 rounded-t-2xl rounded-br-2xl shadow-md shadow-on-surface/5">
+          <div id="${uid}-preview"></div>
+          <div id="${uid}-body" class="streaming-body text-sm leading-relaxed text-on-surface-variant whitespace-pre-wrap break-words"></div>
+          <div id="${uid}-kb"></div>
+          <div id="${uid}-handoff"></div>
+        </div>
+        <div class="px-1 space-y-1.5" id="${uid}-footer">
+          <div class="flex items-center justify-between flex-wrap gap-2">
+            <span class="text-[10px] text-tertiary uppercase tracking-widest font-semibold">${time} · Bot</span>
+            <div id="${uid}-fb"></div>
+          </div>
+          <div id="${uid}-metrics"></div>
+        </div>
+      </div>
+    </div>
+  `;
+  return {
+    el: div,
+    uid,
+    previewEl:  div.querySelector(`#${uid}-preview`),
+    bodyEl:     div.querySelector(`#${uid}-body`),
+    kbEl:       div.querySelector(`#${uid}-kb`),
+    handoffEl:  div.querySelector(`#${uid}-handoff`),
+    fbEl:       div.querySelector(`#${uid}-fb`),
+    metricsEl:  div.querySelector(`#${uid}-metrics`),
+  };
+}
+
+/** Apply meta event: show preview banner + KB hits + handoff banner. */
+function applyStreamMeta(bubble, meta) {
+  const { previewEl, kbEl, handoffEl } = bubble;
+  const { mode, kb_hits = [], handoff_recommended } = meta;
+
+  if (mode === 'preview') {
+    previewEl.innerHTML = `
+      <div class="mb-3 flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-50 border border-amber-200">
+        <span class="material-symbols-outlined text-amber-500" style="font-size:1rem;">warning</span>
+        <span class="text-xs text-amber-700 font-medium">Chế độ xem trước — AI chưa khả dụng.</span>
+      </div>`;
+    if (kb_hits.length > 0) {
+      bubble.bodyEl.textContent = `Tìm thấy ${kb_hits.length} nội dung liên quan trong cơ sở tri thức.`;
+    }
+  }
+
+  if (kb_hits.length > 0) {
+    const items = kb_hits.map(h => `
+      <li class="flex items-start gap-2 text-xs text-on-surface-variant">
+        <span class="material-symbols-outlined text-primary-container shrink-0" style="font-size:1rem;">article</span>
+        <span><strong>${escapeHtml(h.topic)}</strong> — ${escapeHtml(h.question)}</span>
+      </li>`).join('');
+    kbEl.innerHTML = `
+      <details class="mt-3 group">
+        <summary class="text-[10px] font-bold uppercase tracking-widest text-tertiary cursor-pointer flex items-center gap-1 select-none">
+          <span class="material-symbols-outlined transition-transform group-open:rotate-90" style="font-size:0.85rem;">chevron_right</span>
+          ${kb_hits.length} nguồn tham chiếu
+        </summary>
+        <ul class="mt-2 space-y-2 pl-2 border-l-2 border-primary/20">${items}</ul>
+        <a href="https://www.xanhsm.com/helps" target="_blank" rel="noopener noreferrer"
+           class="mt-3 flex items-center gap-1.5 text-[10px] font-bold text-primary hover:underline w-fit">
+          <span class="material-symbols-outlined" style="font-size:0.85rem;">open_in_new</span>
+          Xem toàn bộ tại xanhsm.com/helps
+        </a>
+      </details>`;
+  }
+
+  if (handoff_recommended) {
+    handoffEl.innerHTML = `
+      <div class="mt-3 flex items-start gap-2 p-3 rounded-xl bg-amber-50 border border-amber-200">
+        <span class="material-symbols-outlined text-amber-500 shrink-0" style="font-size:1.1rem;">support_agent</span>
+        <p class="text-xs text-amber-700 font-medium leading-relaxed">
+          Câu hỏi này có thể cần tư vấn viên hỗ trợ trực tiếp.
+        </p>
+      </div>`;
+  }
+}
+
+/** Finalize bubble after done event: re-render markdown, add metrics + feedback. */
+function finalizeStreamBubble(bubble, fullText, doneEvt) {
+  const { bodyEl, fbEl, metricsEl } = bubble;
+  const { assistant_message_id, metrics } = doneEvt;
+
+  // Re-render body with full markdown parsing
+  if (fullText) {
+    bodyEl.className = 'prose max-w-none';
+    bodyEl.innerHTML = nl2p(fullText);
+  }
+
+  // Feedback buttons
+  if (assistant_message_id) {
+    fbEl.innerHTML = `
+      <div class="flex items-center gap-2" id="fb-${assistant_message_id}">
+        <button onclick="handleThumbsUp('${assistant_message_id}', this)"
+          class="flex items-center gap-1.5 px-3 py-1 rounded-full bg-surface-container hover:bg-secondary-container transition-colors text-on-surface-variant text-[10px] font-bold">
+          <span class="material-symbols-outlined" style="font-size:1rem;">thumb_up</span>
+          Hữu ích
+        </button>
+        <button onclick="handleThumbsDown('${assistant_message_id}')"
+          class="flex items-center gap-1.5 px-3 py-1 rounded-full bg-surface-container hover:bg-error-container transition-colors text-on-surface-variant">
+          <span class="material-symbols-outlined" style="font-size:1rem;">thumb_down</span>
+        </button>
+      </div>`;
+  }
+
+  // Metrics chips
+  if (metrics) {
+    const chips = [];
+    if (metrics.model) {
+      chips.push(`<span class="metric-chip"><span class="material-symbols-outlined" style="font-size:0.75rem;">memory</span>${escapeHtml(metrics.model)}</span>`);
+    }
+    if (metrics.latency_ms != null) {
+      const ms = Math.round(metrics.latency_ms);
+      chips.push(`<span class="metric-chip"><span class="material-symbols-outlined" style="font-size:0.75rem;">bolt</span>${ms >= 1000 ? (ms/1000).toFixed(1)+'s' : ms+'ms'}</span>`);
+    }
+    if (metrics.usage) {
+      const { input_tokens, output_tokens, total_tokens } = metrics.usage;
+      const total = total_tokens ?? ((input_tokens ?? 0) + (output_tokens ?? 0));
+      chips.push(`<span class="metric-chip" title="Input: ${input_tokens ?? '?'} · Output: ${output_tokens ?? '?'}"><span class="material-symbols-outlined" style="font-size:0.75rem;">token</span>${total.toLocaleString()} tok</span>`);
+    }
+    if (metrics.cost_usd_estimate != null) {
+      const c = metrics.cost_usd_estimate;
+      chips.push(`<span class="metric-chip"><span class="material-symbols-outlined" style="font-size:0.75rem;">attach_money</span>${c < 0.001 ? '$'+c.toFixed(6) : '$'+c.toFixed(4)}</span>`);
+    }
+    if (chips.length) {
+      metricsEl.innerHTML = `<div class="flex items-center gap-1.5 flex-wrap mt-1">${chips.join('')}</div>`;
+    }
+  }
+}
+
 function appendMessage(el) {
   const container = document.getElementById('chat-messages');
   container.appendChild(el);
@@ -748,28 +935,71 @@ function quickSend(text) {
 async function sendChat(text) {
   if (!text || state.loading) return;
 
-  // Switch to chat view if on welcome
   if (state.view === 'welcome') showView('chat');
 
-  // Append user message
   const now = fmtTime(new Date().toISOString());
   appendMessage(renderUserMessage(text, now));
-
-  // Show typing indicator
   appendMessage(renderTypingIndicator());
 
-  // Disable send button
   setSendDisabled(true);
   state.loading = true;
 
   try {
-    const turn = await postMessage(text);
+    if (!state.sessionId) await createSession();
+
+    const res = await fetch(
+      `${API_BASE}/api/v1/sessions/${state.sessionId}/messages/stream`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({ message: text, role_mode: 'rule' }),
+      }
+    );
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status}: ${errText}`);
+    }
+
+    // Swap typing indicator → streaming bubble
     removeTypingIndicator();
     const botTime = fmtTime(new Date().toISOString());
-    appendMessage(renderBotMessage(turn, botTime));
+    const bubble = createStreamingBubble(botTime);
+    appendMessage(bubble.el);
 
-    // Hide quick chips after first exchange
     document.getElementById('quick-chips')?.classList.add('hidden');
+
+    let fullText = '';
+    let metaApplied = false;
+
+    for await (const evt of parseSSE(res)) {
+      switch (evt.type) {
+        case 'meta':
+          if (!metaApplied) {
+            applyStreamMeta(bubble, evt);
+            metaApplied = true;
+          }
+          break;
+
+        case 'chunk':
+          fullText += evt.text;
+          bubble.bodyEl.textContent = fullText;
+          // Auto-scroll as text arrives
+          document.getElementById('chat-messages').scrollTop =
+            document.getElementById('chat-messages').scrollHeight;
+          break;
+
+        case 'done':
+          finalizeStreamBubble(bubble, fullText, evt);
+          break;
+
+        case 'error':
+          bubble.bodyEl.innerHTML =
+            `<p class="text-sm text-error font-medium">Lỗi: ${escapeHtml(evt.message)}</p>`;
+          showToast('Lỗi từ AI: ' + evt.message, 'error');
+          break;
+      }
+    }
   } catch (err) {
     removeTypingIndicator();
     appendMessage(renderErrorMessage(err.message));

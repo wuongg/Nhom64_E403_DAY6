@@ -54,6 +54,49 @@ class Response:
         await send({"type": "http.response.body", "body": self.body})
 
 
+class StreamingResponse(Response):
+    """ASGI streaming response that sends chunks as they arrive."""
+
+    def __init__(
+        self,
+        content: Any,  # async generator yielding str | bytes
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        media_type: str = "text/plain; charset=utf-8",
+    ):
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.media_type = media_type
+        self._iterator = content
+        # body is unused for streaming
+        self.body = b""
+
+    async def __call__(self, scope: dict[str, Any], receive: Callable[[], Awaitable[dict[str, Any]]], send: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+        response_headers = [(b"content-type", self.media_type.encode("utf-8"))]
+        for key, value in self.headers.items():
+            response_headers.append((key.lower().encode("utf-8"), str(value).encode("utf-8")))
+
+        await send({"type": "http.response.start", "status": self.status_code, "headers": response_headers})
+
+        async for chunk in self._aiter():
+            body = chunk if isinstance(chunk, bytes) else chunk.encode("utf-8")
+            await send({"type": "http.response.body", "body": body, "more_body": True})
+
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    async def _aiter(self):
+        if inspect.isasyncgen(self._iterator):
+            async for chunk in self._iterator:
+                yield chunk
+        elif inspect.isgenerator(self._iterator):
+            for chunk in self._iterator:
+                yield chunk
+        else:
+            # already-collected iterable
+            for chunk in self._iterator:
+                yield chunk
+
+
 class JSONResponse(Response):
     def __init__(
         self,

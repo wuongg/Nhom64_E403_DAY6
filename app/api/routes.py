@@ -7,7 +7,8 @@ from pydantic import ValidationError
 
 from ..db import FeedbackWrite, MessageWrite
 from ..db.contracts import ChatMessageRecord
-from .framework import APIRouter, HTTPException, Request
+from ..llm import ChatResult, chat_openai_stream_async
+from .framework import APIRouter, HTTPException, Request, StreamingResponse
 from .schemas import (
     CreateSessionResponse,
     FeedbackRequest,
@@ -183,6 +184,142 @@ async def post_message(request: Request, session_id: str) -> MessageResponse:
         handoff_recommended=turn.handoff.recommended,
         handoff_reason=turn.handoff.reason,
         metrics=None if turn.answer is None else _metrics_payload(turn.answer),
+    )
+
+
+@router.post("/sessions/{session_id}/messages/stream")
+async def post_message_stream(request: Request, session_id: str) -> StreamingResponse:
+    """Server-Sent Events endpoint for streaming LLM responses.
+
+    SSE event types:
+    - ``meta``  — sent immediately; contains KB hits, role decision, handoff, mode.
+    - ``chunk`` — one text fragment from the LLM stream.
+    - ``done``  — final event; contains assistant_message_id and full metrics.
+    - ``error`` — if the LLM call fails mid-stream.
+    """
+    container = _container(request)
+    if container.store.get_session(session_id) is None:
+        raise HTTPException(404, "Session not found")
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid JSON body: {exc}") from exc
+
+    try:
+        body = MessageRequest(**(payload or {}))
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors()) from exc
+
+    # ── Pre-LLM work (sync, fast) ────────────────────────────────────────────
+    prepared = container.chat_service.prepare(
+        body.message,
+        role_mode=body.role_mode,
+        role_override=body.role_override,
+        k=body.k,
+        model=body.model,
+    )
+
+    user_message = container.store.add_message(
+        MessageWrite(
+            session_id=session_id,
+            actor="user",
+            content=body.message,
+            role=prepared.role_decision.role,
+            safety=prepared.role_decision.safety,
+            handoff_recommended=prepared.handoff.recommended,
+            handoff_reason=prepared.handoff.reason,
+            model=prepared.active_model,
+            kb_hits=[hit.to_public_dict() for hit in prepared.kb_results],
+        )
+    )
+
+    # ── SSE generator ────────────────────────────────────────────────────────
+    async def event_stream():
+        def _sse(obj: dict) -> str:
+            return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+        # 1. meta — lets the frontend render KB hits and role info immediately
+        yield _sse({
+            "type": "meta",
+            "session_id": session_id,
+            "user_message_id": user_message.id,
+            "mode": prepared.mode,
+            "role_decision": {
+                "role": prepared.role_decision.role,
+                "safety": prepared.role_decision.safety,
+                "driver_type": prepared.role_decision.driver_type,
+                "reason": prepared.role_decision.reason,
+            },
+            "kb_hits": [
+                {
+                    "id": h.id,
+                    "topic": h.topic,
+                    "question": h.question,
+                    "category": h.category,
+                }
+                for h in prepared.kb_hits
+            ],
+            "handoff_recommended": prepared.handoff.recommended,
+            "handoff_reason": prepared.handoff.reason,
+        })
+
+        if prepared.preview_only:
+            yield _sse({"type": "done", "assistant_message_id": None, "metrics": None})
+            return
+
+        # 2. LLM stream — yield one chunk per token batch
+        final_result: ChatResult | None = None
+        try:
+            async for item in chat_openai_stream_async(
+                prepared.prompt.system,
+                prepared.prompt.user,
+                model=prepared.active_model,
+            ):
+                if isinstance(item, str):
+                    yield _sse({"type": "chunk", "text": item})
+                else:
+                    final_result = item
+        except Exception as exc:
+            yield _sse({"type": "error", "message": str(exc)})
+            return
+
+        # 3. Persist assistant message, send done
+        assistant_message = None
+        if final_result is not None:
+            assistant_message = container.store.add_message(
+                MessageWrite(
+                    session_id=session_id,
+                    actor="assistant",
+                    content=final_result.text,
+                    role=prepared.role_decision.role,
+                    safety=prepared.role_decision.safety,
+                    handoff_recommended=prepared.handoff.recommended,
+                    handoff_reason=prepared.handoff.reason,
+                    model=final_result.model,
+                    latency_ms=final_result.latency_ms,
+                    input_tokens=final_result.usage.input_tokens,
+                    output_tokens=final_result.usage.output_tokens,
+                    total_tokens=final_result.usage.total_tokens,
+                    cost_usd_estimate=final_result.cost_usd_estimate,
+                    kb_hits=[hit.to_public_dict() for hit in prepared.kb_results],
+                )
+            )
+
+        yield _sse({
+            "type": "done",
+            "assistant_message_id": assistant_message.id if assistant_message else None,
+            "metrics": final_result.to_dict() if final_result else None,
+        })
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 
