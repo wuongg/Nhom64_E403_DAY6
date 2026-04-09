@@ -1,0 +1,38 @@
+{
+  "dataset": "ragas_dataset_trial.json",
+  "evaluator_model": "gpt-4o-mini",
+  "metrics": {
+    "context_recall": 1.0,
+    "faithfulness": 0.5513687600644123,
+    "factual_correctness(mode=f1)": 0.48333333333333334
+  },
+  "per_sample_scores": [
+    {
+      "context_recall": 1.0,
+      "faithfulness": 0.5333333333333333,
+      "factual_correctness(mode=f1)": 0.62
+    },
+    {
+      "context_recall": 1.0,
+      "faithfulness": 0.5555555555555556,
+      "factual_correctness(mode=f1)": 0.33
+    },
+    {
+      "context_recall": 1.0,
+      "faithfulness": 0.5652173913043478,
+      "factual_correctness(mode=f1)": 0.5
+    }
+  ],
+  "runtime": {
+    "seconds_total": 234.95996540000124,
+    "samples": 3,
+    "seconds_per_sample": 78.31998846666708,
+    "samples_per_second": 0.012768132625882589
+  },
+  "usage": {
+    "requests_tracked": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0
+  }
+}
