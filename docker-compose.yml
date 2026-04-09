@@ -13,8 +13,8 @@ services:
       DB_URL: sqlite:////data/xanhsm_helpcenter.db
       # Thư mục raw mount từ host
       RAW_DIR: /data/raw
-      # Cho phép frontend trên localhost:3000 gọi API (thêm cả port 80)
-      CORS_ORIGINS: "http://localhost,http://localhost:8080,http://localhost:3000,http://localhost:5173,http://127.0.0.1"
+      # Cho phép frontend local và containerized gọi API từ cả localhost lẫn 127.0.0.1
+      CORS_ORIGINS: "http://localhost,http://127.0.0.1,http://localhost:8080,http://127.0.0.1:8080,http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173"
     volumes:
       # Dữ liệu KB markdown (read-only)
       - ./raw:/data/raw:ro

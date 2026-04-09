@@ -596,7 +596,14 @@
     /* ============================================================
        STATE
     ============================================================ */
-    const API_BASE = 'http://127.0.0.1:8001';
+    const API_BASE = (() => {
+      const params = new URLSearchParams(window.location.search);
+      const override = params.get('apiBase') || window.localStorage.getItem('apiBase');
+      if (override) return override.replace(/\/$/, '');
+
+      const { protocol, hostname } = window.location;
+      return `${protocol}//${hostname}:8000`;
+    })();
 
     const state = {
       sessionId: null,
