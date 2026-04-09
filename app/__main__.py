@@ -8,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .kb import load_from_raw_folder, retrieve
-from .llm import chat_openai, has_openai_key
+from .llm import chat_openai_with_metrics, has_openai_key
 from .prompting import build_prompt
 from .role_llm import decide_role_with_llm
 from .role_tree import decide_role
@@ -42,7 +42,7 @@ def main() -> int:
         help="Cách phân loại role: auto (ưu tiên LLM nếu có key) | llm | rule",
     )
     parser.add_argument("--k", type=int, default=5)
-    parser.add_argument("--model", type=str, default="gpt-4.1-mini")
+    parser.add_argument("--model", type=str, default="gpt-4o-mini")
     parser.add_argument("--show-prompt", action="store_true", help="In prompt + KB thay vì gọi LLM")
     args = parser.parse_args()
 
@@ -81,9 +81,11 @@ def main() -> int:
             print("\n[info] OPENAI_API_KEY chưa được set -> đang chạy chế độ preview prompt.")
         return 0
 
-    answer = chat_openai(prompt.system, prompt.user, model=args.model)
+    answer = chat_openai_with_metrics(prompt.system, prompt.user, model=args.model)
     print("\n=== ANSWER ===\n")
-    print(answer.strip())
+    print(answer.text.strip())
+    print("\n=== METRICS ===\n")
+    print(json.dumps(answer.to_dict(), ensure_ascii=False, indent=2))
     return 0
 
 

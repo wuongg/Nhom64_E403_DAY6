@@ -25,7 +25,7 @@ Chỉ trả về JSON hợp lệ. Không kèm markdown. Không thêm chữ khác
 """
 
 
-def decide_role_with_llm(user_text: str, model: str = "gpt-4.1-mini") -> RoleDecision:
+def decide_role_with_llm(user_text: str, model: str = "gpt-4o-mini") -> RoleDecision:
     """
     LLM-first role decision. Falls back to rule-based when no API key or parse fails.
     """

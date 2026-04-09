@@ -49,8 +49,8 @@ def main() -> int:
         default="rule",
         help="Role decision mode for evaluation queries",
     )
-    parser.add_argument("--answer-model", type=str, default="gpt-4.1-mini")
-    parser.add_argument("--evaluator-model", type=str, default="gpt-4.1-mini")
+    parser.add_argument("--answer-model", type=str, default="gpt-4o-mini")
+    parser.add_argument("--evaluator-model", type=str, default="gpt-4o-mini")
     parser.add_argument("--out", type=str, default="ragas_results.json", help="Output JSON path")
     args = parser.parse_args()
 

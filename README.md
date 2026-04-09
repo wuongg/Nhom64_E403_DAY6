@@ -47,7 +47,7 @@ pip install -r requirements.txt
 Chạy đánh giá (ví dụ 10 câu hỏi ngẫu nhiên trong KB, top-k=5):
 
 ```bash
-python eval_ragas.py --n 10 --k 5 --role-mode rule --answer-model gpt-4.1-mini --evaluator-model gpt-4.1-mini --out ragas_results.json
+python eval_ragas.py --n 10 --k 5 --role-mode rule --answer-model gpt-4o-mini --evaluator-model gpt-4o-mini --out ragas_results.json
 ```
 
 Output:
