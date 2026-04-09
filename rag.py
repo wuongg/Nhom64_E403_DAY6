@@ -28,14 +28,19 @@ GEN_MODEL = "gemini-3.1-flash-lite-preview"
 TOP_K = 5  # số FAQ trả về cho mỗi câu hỏi
 
 SYSTEM_PROMPT = """\
-Bạn là trợ lý AI của Trung tâm hỗ trợ XanhSM. Nhiệm vụ:
-- Trả lời câu hỏi khách hàng dựa HOÀN TOÀN vào nội dung FAQ được cung cấp bên dưới.
-- Trả lời ngắn gọn, dạng bước 1-2-3 nếu phù hợp.
-- Nếu FAQ không chứa đủ thông tin, nói rõ và hướng dẫn liên hệ hotline 1900 2097.
+Bạn là "Trợ lý điều phối thông minh" của Trung tâm hỗ trợ XanhSM. Nhiệm vụ:
+- Tự động rào trước bảo mật: "Do quy định bảo mật, em không thể truy cập dữ liệu chuyến đi cá nhân mà chỉ có thể tra cứu thông tin chung..." (nếu phù hợp).
+- Trả lời khách hàng dựa HOÀN TOÀN vào FAQ được cung cấp bên dưới.
+- Luôn trình bày quy trình hướng dẫn ở dạng danh sách (checklist 1-2-3) rõ ràng để khách dễ làm theo.
+- Thể hiện sự đồng cảm với vấn đề của khách.
+- Nếu FAQ không chứa đủ thông tin, nói rõ và hướng dẫn gọi tổng đài.
 - KHÔNG bịa thông tin ngoài FAQ.
-- Nếu câu hỏi liên quan đến an toàn / tai nạn / quấy rối, ưu tiên hướng dẫn khẩn cấp trước.
 - Trả lời bằng tiếng Việt.
 """
+
+EMERGENCY_KEYWORDS = ["tai nạn", "công an", "cấp cứu", "bệnh viện", "chảy máu", "va chạm", "tự tử", "đụng xe"]
+HANDOFF_KEYWORDS = ["nhân viên", "cskh", "tổng đài", "bực", "tức", "điên", "đền tiền", "kiện", "người thật", "chửi"]
+MAX_TURNS_BEFORE_HANDOFF = 3
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -73,6 +78,7 @@ class RAGEngine:
         self.texts = [entry["text"] for entry in self.faq]
         self.embeddings: np.ndarray | None = None
         self.history: list[dict] = []
+        self.turn_count: int = 0
 
     # ── Embedding ────────────────────────────────────────────────────
 
@@ -123,19 +129,49 @@ class RAGEngine:
 
     # ── Retrieval ────────────────────────────────────────────────────
 
-    def _call_with_retry(self, fn, max_retries=3):
-        """Gọi API với retry khi bị rate limit."""
+    def _call_with_retry(self, fn, max_retries=5, timeout=60):
+        """Gọi API với retry khi bị rate limit / server overload + timeout chống treo."""
         import time
+        import threading
+
+        RETRYABLE = ["429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE"]
+
         for attempt in range(max_retries):
-            try:
-                return fn()
-            except Exception as e:
-                if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and attempt < max_retries - 1:
-                    wait = 30 * (attempt + 1)
-                    print(f"   ⏳ Rate limit, chờ {wait}s...")
+            result_container = [None]
+            error_container = [None]
+
+            def _worker():
+                try:
+                    result_container[0] = fn()
+                except Exception as e:
+                    error_container[0] = e
+
+            thread = threading.Thread(target=_worker, daemon=True)
+            thread.start()
+            thread.join(timeout=timeout)
+
+            if thread.is_alive():
+                # Thread vẫn chạy = API bị treo (socket stall)
+                wait = 15 * (attempt + 1)
+                if attempt < max_retries - 1:
+                    print(f"   ⏳ API timeout ({timeout}s), thử lại sau {wait}s... (lần {attempt+1}/{max_retries})")
+                    time.sleep(wait)
+                    continue
+                else:
+                    raise TimeoutError(f"API không phản hồi sau {max_retries} lần thử (timeout {timeout}s/lần).")
+
+            if error_container[0] is not None:
+                e = error_container[0]
+                err_str = str(e)
+                if any(code in err_str for code in RETRYABLE) and attempt < max_retries - 1:
+                    wait = 15 * (attempt + 1)
+                    print(f"   ⏳ API lỗi tạm thời, chờ {wait}s... (lần {attempt+1}/{max_retries})")
                     time.sleep(wait)
                 else:
-                    raise
+                    raise e
+
+            if result_container[0] is not None:
+                return result_container[0]
 
     def retrieve(self, query: str, top_k: int = TOP_K) -> list[dict]:
         """Tìm top-k FAQ gần nhất với câu hỏi."""
@@ -164,8 +200,61 @@ class RAGEngine:
 
     # ── Generation ───────────────────────────────────────────────────
 
-    def answer(self, user_query: str) -> str:
-        """RAG pipeline: retrieve → build context → generate."""
+    def trigger_handoff(self, final_query: str, reason: str) -> str:
+        """Gom log để chuyển nhân viên CSKH và reset phiên."""
+        self.history.append({"role": "user", "parts": [{"text": final_query}]})
+        
+        # Dùng LLM để tóm tắt vấn đề
+        summary_prompt = "Hãy tóm tắt ngắn gọn (tối đa 3-4 dòng) vấn đề cốt lõi mà khách hàng đang gặp phải dựa trên đoạn chat sau để chuyển cho nhân viên CSKH xử lý:\n\n"
+        for msg in self.history:
+            role_str = "Khách: " if msg["role"] == "user" else "Bot: "
+            summary_prompt += f"{role_str}{msg['parts'][0]['text']}\n"
+            
+        try:
+            response = self._call_with_retry(
+                lambda: self.client.models.generate_content(
+                    model=GEN_MODEL,
+                    contents=[summary_prompt],
+                    config={"temperature": 0.1, "max_output_tokens": 300}
+                )
+            )
+            summary = response.text.strip()
+        except Exception:
+            summary = "(Không thể tạo tóm tắt do lỗi API)"
+        
+        # Reset phiên trò chuyện
+        self.history.clear()
+        self.turn_count = 0
+        
+        return (
+            f"🚨 [Rào trước] Do bảo mật truy cập dữ liệu và để hỗ trợ anh/chị tốt nhất, "
+            f"em xin phép chuyển thông tin này tới nhân viên chăm sóc khách hàng.\n"
+            f"* Lý do hệ thống tự động ngắt: {reason}\n"
+            f"\n--- GHI CHÚ CHUYỂN GIAO CHO CSKH ---\n{summary}\n--------------------------------------\n\n"
+            f"(💡 Bot đã tự động reset toàn bộ lịch sử trò chuyện. Bạn có thể hỏi vấn đề mới.)"
+        )
+
+    def answer(self, user_query: str) -> dict:
+        """RAG pipeline: retrieve → build context → generate. Trả về dict chứa answer, latency, token."""
+        import time
+        t_start = time.perf_counter()
+
+        # 0. Pre-generation check (Handoff Thresholds)
+        query_lower = user_query.lower()
+        if any(kw in query_lower for kw in EMERGENCY_KEYWORDS):
+            text = self.trigger_handoff(user_query, "Khách hàng gặp trường hợp khẩn cấp")
+            return {"text": text, "latency": time.perf_counter() - t_start, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        if any(kw in query_lower for kw in HANDOFF_KEYWORDS):
+            text = self.trigger_handoff(user_query, "Khách hàng yêu cầu gặp nhân viên hoặc có biểu hiện giận dữ")
+            return {"text": text, "latency": time.perf_counter() - t_start, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        if self.turn_count >= MAX_TURNS_BEFORE_HANDOFF:
+            text = self.trigger_handoff(user_query, f"Vượt quá ngưỡng hỏi đáp tự động ({MAX_TURNS_BEFORE_HANDOFF} lần)")
+            return {"text": text, "latency": time.perf_counter() - t_start, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        self.turn_count += 1
+
         # 1. Retrieve
         docs = self.retrieve(user_query)
 
@@ -191,7 +280,8 @@ class RAGEngine:
         )
         messages.append({"role": "user", "parts": [{"text": user_message}]})
 
-        # 4. Generate (with retry)
+        # 4. Generate (with retry + cooldown giữa embed & generate để tránh rate limit)
+        time.sleep(2)
         response = self._call_with_retry(
             lambda: self.client.models.generate_content(
                 model=GEN_MODEL,
@@ -205,8 +295,21 @@ class RAGEngine:
         )
 
         answer_text = response.text
+        latency = time.perf_counter() - t_start
 
-        # 5. Update history (giữ context gọn — chỉ lưu câu hỏi gốc, không lưu FAQ context)
+        # 5. Trích xuất token usage từ response metadata
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+        try:
+            usage = response.usage_metadata
+            prompt_tokens = getattr(usage, "prompt_token_count", 0) or 0
+            completion_tokens = getattr(usage, "candidates_token_count", 0) or 0
+            total_tokens = getattr(usage, "total_token_count", 0) or (prompt_tokens + completion_tokens)
+        except Exception:
+            pass
+
+        # 6. Update history (giữ context gọn — chỉ lưu câu hỏi gốc, không lưu FAQ context)
         self.history.append({"role": "user", "parts": [{"text": user_query}]})
         self.history.append({"role": "model", "parts": [{"text": answer_text}]})
 
@@ -215,7 +318,13 @@ class RAGEngine:
         if len(self.history) > MAX_TURNS * 2:
             self.history = self.history[-(MAX_TURNS * 2):]
 
-        return answer_text
+        return {
+            "text": answer_text,
+            "latency": latency,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
 
 
 # ── CLI Chat Loop ────────────────────────────────────────────────────
@@ -260,8 +369,9 @@ def main():
                 print(f"   {i}. [{doc['score']:.3f}] [{doc['topic']}] {doc['question']}")
             print()
 
-        answer = engine.answer(query)
-        print(f"\n🤖 Trợ lý: {answer}")
+        result = engine.answer(query)
+        print(f"\n🤖 Trợ lý: {result['text']}")
+        print(f"   ⏱ Latency: {result['latency']:.2f}s | 🪙 Tokens: {result['prompt_tokens']} prompt + {result['completion_tokens']} completion = {result['total_tokens']} total")
 
 
 if __name__ == "__main__":
