@@ -186,6 +186,46 @@ def test_preview_mode_without_openai_key(monkeypatch: pytest.MonkeyPatch, db_pat
     assert data["session_id"] == session_id
 
 
+def test_answer_mode_returns_metrics_when_llm_succeeds(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
+    _configure_env(monkeypatch, db_path, openai_key="test-key")
+    with _load_test_client() as client:
+        from app.llm import ChatResult, ChatUsage
+        from app.services import chat_service as chat_service_module
+
+        monkeypatch.setattr(chat_service_module, "has_openai_key", lambda: True)
+        monkeypatch.setattr(
+            chat_service_module,
+            "chat_openai_with_metrics",
+            lambda system, user, model="gpt-4o-mini": ChatResult(
+                text="Đây là câu trả lời mô phỏng.",
+                model=model,
+                latency_ms=123.4,
+                usage=ChatUsage(input_tokens=11, output_tokens=22, total_tokens=33),
+                cost_usd_estimate=0.000123,
+            ),
+        )
+
+        created = client.post("/api/v1/sessions")
+        session_id = created.json()["session_id"]
+
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json=_message_payload("Tôi muốn xuất hóa đơn VAT cho chuyến đi", role_mode="rule"),
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["mode"] == "answer"
+    assert data["answer"] == "Đây là câu trả lời mô phỏng."
+    assert data["assistant_message_id"] is not None
+    assert data["metrics"] == {
+        "model": "gpt-4o-mini",
+        "latency_ms": 123.4,
+        "usage": {"input_tokens": 11, "output_tokens": 22, "total_tokens": 33},
+        "cost_usd_estimate": 0.000123,
+    }
+
+
 def test_feedback_is_persisted(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
     _configure_env(monkeypatch, db_path, openai_key=None)
     with _load_test_client() as client:

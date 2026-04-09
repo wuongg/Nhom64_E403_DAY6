@@ -64,7 +64,7 @@ def _kb_hits_payload(hits) -> list[KBHitResponse]:
 
 
 def _metrics_payload(result) -> MetricsResponse:
-    return MetricsResponse(**result.to_dict(), usage=result.to_dict()["usage"])
+    return MetricsResponse(**result.to_dict())
 
 
 def _message_item_payload(message: ChatMessageRecord) -> MessageItemResponse:

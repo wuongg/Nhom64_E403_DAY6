@@ -1,3 +1,0 @@
-INFO:     127.0.0.1:54481 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:54481 - "POST /api/v1/sessions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:54481 - "POST /api/v1/sessions/9a6f333b-efc3-4d7f-93c7-354b82238d08/messages HTTP/1.1" 200 OK
